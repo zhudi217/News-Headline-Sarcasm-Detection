@@ -1,91 +1,157 @@
-import os
 import pandas as pd
-import numpy as np
-from sklearn.metrics import confusion_matrix
-from sklearn.metrics import classification_report
+import os
+
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.svm import LinearSVC
+from sklearn import metrics
+
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from keras.layers import Dense, Input, Embedding, Dropout, Conv1D
+from keras.layers import GlobalMaxPool1D
+from keras.models import Model
+from keras.optimizers import Adam
+from keras.callbacks import EarlyStopping
+from sklearn.metrics import accuracy_score, confusion_matrix
+
+from sklearn.svm import SVC
 from sklearn.model_selection import KFold
+
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 print(os.listdir("./input"))
 
-with open('./input/Sarcasm_Headlines_Dataset.json', 'r') as f:
-    jsonDict = f.readlines()
+data = pd.read_json("./input/Sarcasm_Headlines_Dataset.json", lines = True)
+data = data[["headline", "is_sarcastic"]]
+print(data.shape)
+data.head(10)
 
-print(jsonDict[:5])
-print(len(jsonDict))
+analyzer = SentimentIntensityAnalyzer()
 
-# remove the trailing "\n" from each line, I did not do any real cleaning I wanted to see the pure accurasy, more in the few next cells
-data = list(map(lambda x: x.rstrip(), jsonDict))
-print(data[:5])
-
-data_json_str = "[" + ",".join(data) + "]"
-
-print(len(data_json_str))
-print(data_json_str[:10])
-
-# now, load it into pandas
-data_df = pd.read_json(data_json_str)
-print(data_df.head(10))
-
-### Task #2: Check for missing values:
-data_df.isnull().sum()
-
-# Check for whitespace strings (it's OK if there aren't any!):
-blanks = []  # start with an empty list
-
-for i, link, headline, sarcastic in data_df.itertuples():  # iterate over the DataFrame
-    if type(headline) == str:  # avoid NaN values
-        if headline.isspace():  # test 'review' for whitespace
-            blanks.append(i)  # add matching index numbers to the list
+final_list = []
+for sent in data['headline']:
+    senti = analyzer.polarity_scores(sent)
+    list_temp = []
+    for key, value in senti.items():
+        temp = value
+        list_temp.append(temp)
+    final_list.append(list_temp)
 
 
-print(list(data_df.itertuples())[:5])
-print(len(blanks))
-print(data_df.shape)
-
-### Task #3:  Remove NaN values:
-data_df.dropna(inplace=True)
-# print(data_df.shape)
-headlines = data_df['headline']
-labels = data_df['is_sarcastic']
-
-# print(headlines[0], labels[0])
-
-#Sanity check
-data_df['is_sarcastic'].value_counts()
+temp_df = pd.DataFrame(final_list, columns=['compound','neg','neu','pos'], index = data.index)
+data = pd.merge(data, temp_df, left_index=True,right_index=True)
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+    print(data.head(5))
 
 
-### Task #5: Split the data into train & test sets: use a validation at the end of phd to twiddle a little more
-#print(len(X))
-X = data_df['headline']#.append(df['headline'])
-#X.append(data_df['headline'])
-y = data_df['is_sarcastic']#.append(df['is_sarcastic'])
-# print(X[:10], len(X))
+train_df, test_df = train_test_split(data, test_size=0.15, random_state=101)
+train_df, val_df = train_test_split(train_df, test_size=0.10, random_state=101)
+print("Train size:{}".format(train_df.shape))
+print("Validation size:{}".format(val_df.shape))
+print("Test size:{}".format(test_df.shape))
 
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
-# print(X_test.shape)
-
-### Task #6: Build a pipeline to vectorize the date, then train and fit a model
-vectorizer = TfidfVectorizer()
-# print(X_train)
-X_train_vec = vectorizer.fit_transform(X_train, y_train)
-X_test_vec = vectorizer.transform(X_test, y_test)
-
-# text_clf = Pipeline([('tfidf', TfidfVectorizer()), ('clf', LinearSVC())])
-model = LinearSVC()
-model.fit(X_train_vec, y_train)
-
-### Task #7: Run predictions and analyze the results
-# Form a prediction set
-pred = model.predict(X_test_vec)
+embed_size = 300
+max_features = 50000
+maxlen = 100
 
 
-# Report the confusion matrix
-print(confusion_matrix(y_test, pred))
+## fill up the missing values
+train_X = train_df["headline"].fillna("_na_").values
+val_X = val_df["headline"].fillna("_na_").values
+test_X = test_df["headline"].fillna("_na_").values
 
-# Print a classification report
-print(classification_report(y_test, pred, digits=4))
+
+## Tokenize the sentences
+tokenizer = Tokenizer(num_words=max_features)
+tokenizer.fit_on_texts(list(train_X))
+train_X = tokenizer.texts_to_sequences(train_X)
+val_X = tokenizer.texts_to_sequences(val_X)
+test_X = tokenizer.texts_to_sequences(test_X)
+
+
+## Pad the sentences
+train_X = pad_sequences(train_X, maxlen=maxlen)
+val_X = pad_sequences(val_X, maxlen=maxlen)
+test_X = pad_sequences(test_X, maxlen=maxlen)
+
+
+## Get the target values
+train_y = train_df['is_sarcastic'].values
+val_y = val_df['is_sarcastic'].values
+test_y = test_df['is_sarcastic'].values
+
+
+''' CNN '''
+inp = Input(shape=(maxlen,))
+x = Embedding(max_features, embed_size)(inp)
+x = Conv1D(256, maxlen)(x)
+x = GlobalMaxPool1D()(x)
+x = Dense(64, activation="relu")(x)
+x = Dropout(0.2)(x)
+x = Dense(32, activation="relu")(x)
+x = Dropout(0.2)(x)
+x = Dense(16, activation="relu")(x)
+x = Dropout(0.2)(x)
+x = Dense(1, activation="sigmoid")(x)
+model2 = Model(inputs=inp, outputs=x)
+adam =  Adam(lr=0.0001,decay=0.00001)
+model2.compile(loss='binary_crossentropy', optimizer=adam, metrics=['accuracy'])
+
+print(model2.summary())
+
+model2.fit(train_X, train_y, batch_size=512, epochs=15, validation_data=(val_X, val_y))
+
+
+# model2.save('cnn.h5')
+# model2.save_weights('cnn_weights.h5')
+
+y_pred2 = model2.predict([test_X], batch_size=512, verbose=1)
+y_pred2 = y_pred2 > 0.4
+
+
+print("Accuracy Score: ", accuracy_score(test_y, y_pred2))
+print("Confusion Matrix: \n", confusion_matrix(test_y, y_pred2))
+print("F1 Score: ", metrics.f1_score(test_y, y_pred2))
+
+
+''' Appending data from CNN '''
+data_X = data["headline"].fillna("_na_").values
+data_X = tokenizer.texts_to_sequences(data_X)
+data_X = pad_sequences(data_X, maxlen = maxlen)
+
+# y_pred_data1 = model1.predict([data_X], batch_size=512, verbose=1)
+y_pred_data2 = model2.predict([data_X], batch_size=512, verbose=1)
+
+d2 = pd.DataFrame(y_pred_data2,columns=['CNN'], index=data.index)
+
+data = pd.merge(data, d2, left_index=True, right_index=True)
+
+data.head()
+
+temp_X = data[['compound', 'neg', 'neu', 'pos', 'CNN']]
+temp_y = data['is_sarcastic']
+
+X_train, X_test, y_train, y_test = train_test_split(temp_X, temp_y, test_size=0.33, random_state=101)
+
+
+''' Trying kFold with Support Vector Classifier '''
+svc = SVC(gamma='auto')
+svc.fit(X_train, y_train)
+
+# cv = KFold(n_splits=10, random_state=42, shuffle=True)
+# scores = []
+# i = 1
+# for train_index, test_index in cv.split(temp_X):
+#     X_train, X_test = temp_X.values[train_index], temp_X.values[test_index]
+#     y_train, y_test = temp_y[train_index], temp_y[test_index]
+#
+#     svc.fit(X_train, y_train)
+#     print("Iteration: ", i, " - Score = ", svc.score(X_test, y_test).round(3))
+#     scores.append(svc.score(X_test, y_test))
+#     i += 1
+
+y_pred_svc = svc.predict(X_test)
+
+print("Accuracy Score: ", accuracy_score(y_test, y_pred_svc))
+print("Confusion Matrix: \n", confusion_matrix(y_test, y_pred_svc))
+print("F1 Score: ", metrics.f1_score(y_test, y_pred_svc))
