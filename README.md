@@ -1,2 +1,8 @@
 # News-Headline-Sarcasm-Detection
-Use python 
+Use command
+
+```
+python sarcasm.py
+```
+
+to run the code
